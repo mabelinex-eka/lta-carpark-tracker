@@ -1,22 +1,14 @@
-import { 
-  Carpark, 
-  BackendConfig, 
-  AvailabilityStatus, 
-  LotDetail,
-  TrafficIncident,
-  TrainAlert,
-  BusArrivalResponse
-} from '../types/carpark';
+import { Carpark, BackendConfig, AvailabilityStatus, LotDetail } from '../types/carpark';
 import { INITIAL_SINGAPORE_CARPARKS } from '../data/singaporeCarparks';
 
 const GOV_API_URL = 'https://api.data.gov.sg/v1/transport/carpark-availability';
+const LOCAL_LTA_ENDPOINT = '/api/carparkavailability';
 
 export const DEFAULT_BACKEND_CONFIG: BackendConfig = {
-  source: 'lta_datamall',
-  customEndpointUrl: 'http://localhost:8080/api/carparks',
+  source: 'lta_serverless',
+  customEndpointUrl: '/api/carparkavailability',
   pollIntervalSecs: 30,
   autoRefresh: true,
-  ltaAccountKey: '',
 };
 
 export interface DataGovCarparkItem {
@@ -29,14 +21,14 @@ export interface DataGovCarparkItem {
   }>;
 }
 
-export interface LtaDataMallCarparkItem {
+export interface LtaDataMallRawItem {
   CarParkID: string;
   Area: string;
   Development: string;
-  Location: string; // "lat lng" e.g. "1.2935 103.8572"
+  Location: string; // "latitude longitude" e.g. "1.29375 103.85718"
   AvailableLots: number;
   LotType: 'C' | 'Y' | 'H';
-  Agency: string; // "HDB" | "URA" | "LTA"
+  Agency: 'HDB' | 'LTA' | 'URA';
 }
 
 export function calculateStatus(available: number, total: number): AvailabilityStatus {
@@ -66,7 +58,58 @@ export function calculateDistanceKm(
   return Math.round(R * c * 10) / 10;
 }
 
-// Map Data.gov.sg carpark response to UI Carpark model
+// Map LTA DataMall items to our UI Carpark model
+export function mergeWithLtaData(
+  currentCarparks: Carpark[],
+  ltaItems: LtaDataMallRawItem[]
+): Carpark[] {
+  // Group LTA items by CarParkID
+  const ltaMap = new Map<string, LtaDataMallRawItem[]>();
+  ltaItems.forEach((item) => {
+    const list = ltaMap.get(item.CarParkID) || [];
+    list.push(item);
+    ltaMap.set(item.CarParkID, list);
+  });
+
+  return currentCarparks.map((cp) => {
+    const items = ltaMap.get(cp.id);
+    if (!items || items.length === 0) return cp;
+
+    const newLots: Record<string, LotDetail> = { ...cp.lots };
+    let combinedAvailable = 0;
+
+    items.forEach((item) => {
+      const avail = item.AvailableLots || 0;
+      const existingTotal = cp.lots[item.LotType]?.total_lots || Math.max(avail, 100);
+      newLots[item.LotType] = {
+        total_lots: existingTotal,
+        lot_type: item.LotType,
+        lots_available: avail,
+      };
+      combinedAvailable += avail;
+    });
+
+    const previousAvailable = cp.availableLotsCombined;
+    const lotDelta = combinedAvailable - previousAvailable;
+    const totalLots = cp.totalLotsCombined;
+    const occupancy =
+      totalLots > 0
+        ? Math.min(100, Math.round(((totalLots - combinedAvailable) / totalLots) * 100))
+        : cp.occupancyPercent;
+
+    return {
+      ...cp,
+      lots: newLots,
+      availableLotsCombined: combinedAvailable,
+      occupancyPercent: occupancy,
+      status: calculateStatus(combinedAvailable, totalLots),
+      update_datetime: new Date().toISOString(),
+      lotDelta: lotDelta !== 0 ? lotDelta : undefined,
+    };
+  });
+}
+
+// Map Data.gov.sg carpark response to our UI Carpark model
 export function mergeWithGovData(
   currentCarparks: Carpark[],
   govDataList: DataGovCarparkItem[]
@@ -116,69 +159,7 @@ export function mergeWithGovData(
   });
 }
 
-// Merge LTA DataMall CarParkAvailabilityv2 payload
-export function mergeWithLtaData(
-  currentCarparks: Carpark[],
-  ltaItems: LtaDataMallCarparkItem[]
-): Carpark[] {
-  // Map by development name or CarParkID
-  const ltaMap = new Map<string, LtaDataMallCarparkItem>();
-  ltaItems.forEach((item) => {
-    if (item.CarParkID) ltaMap.set(item.CarParkID.toLowerCase(), item);
-    if (item.Development) ltaMap.set(item.Development.toLowerCase(), item);
-  });
-
-  return currentCarparks.map((cp) => {
-    const ltaMatch =
-      ltaMap.get(cp.id.toLowerCase()) ||
-      ltaMap.get(cp.name.toLowerCase()) ||
-      Array.from(ltaMap.values()).find((item) =>
-        cp.name.toLowerCase().includes(item.Development.toLowerCase()) ||
-        item.Development.toLowerCase().includes(cp.name.toLowerCase())
-      );
-
-    if (!ltaMatch) return cp;
-
-    const lotType = ltaMatch.LotType || 'C';
-    const existingTotal = cp.lots[lotType]?.total_lots || (lotType === 'C' ? 500 : 80);
-    const available = Number(ltaMatch.AvailableLots) || 0;
-
-    const updatedLots: Record<string, LotDetail> = {
-      ...cp.lots,
-      [lotType]: {
-        total_lots: existingTotal,
-        lot_type: lotType,
-        lots_available: available,
-      },
-    };
-
-    let totalAvail = 0;
-    let totalLots = 0;
-    Object.values(updatedLots).forEach((lot) => {
-      totalAvail += lot.lots_available;
-      totalLots += lot.total_lots;
-    });
-
-    const lotDelta = totalAvail - cp.availableLotsCombined;
-    const occupancy =
-      totalLots > 0
-        ? Math.min(100, Math.round(((totalLots - totalAvail) / totalLots) * 100))
-        : cp.occupancyPercent;
-
-    return {
-      ...cp,
-      lots: updatedLots,
-      availableLotsCombined: totalAvail,
-      totalLotsCombined: totalLots > 0 ? totalLots : cp.totalLotsCombined,
-      occupancyPercent: occupancy,
-      status: calculateStatus(totalAvail, totalLots || cp.totalLotsCombined),
-      update_datetime: new Date().toISOString(),
-      lotDelta: lotDelta !== 0 ? lotDelta : undefined,
-    };
-  });
-}
-
-// Simulate real-time lot fluctuations
+// Simulate real-time lot fluctuations for front-end demonstration
 export function simulateLotTicks(carparks: Carpark[]): Carpark[] {
   return carparks.map((cp) => {
     if (Math.random() > 0.45) return { ...cp, lotDelta: undefined };
@@ -221,69 +202,61 @@ export function simulateLotTicks(carparks: Carpark[]): Carpark[] {
   });
 }
 
-// Fetch carparks from configured data source
+// Fetch carparks from chosen data source
 export async function fetchCarparks(
   config: BackendConfig,
   currentCarparks: Carpark[]
 ): Promise<{ carparks: Carpark[]; sourceUsed: string; error?: string }> {
-  // Option 1: LTA DataMall proxy
-  if (config.source === 'lta_datamall') {
+  // Option 1: Local LTA Serverless proxy (/api/carparkavailability)
+  if (config.source === 'lta_serverless') {
     try {
       const headers: Record<string, string> = { Accept: 'application/json' };
-      if (config.ltaAccountKey) {
-        headers['x-account-key'] = config.ltaAccountKey;
+      if (config.apiKey) {
+        headers['AccountKey'] = config.apiKey;
       }
-      const res = await fetch('/api/lta/carparks', { headers });
+      const res = await fetch(LOCAL_LTA_ENDPOINT, { headers });
       if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
+        throw new Error(`Serverless /api/carparkavailability returned ${res.status}`);
       }
-      const data = await res.json();
-      
-      if (data.value && Array.isArray(data.value) && data.value.length > 0) {
+      const json = await res.json();
+
+      // Check if LTA DataMall returned value array
+      const items: LtaDataMallRawItem[] = Array.isArray(json.value)
+        ? json.value
+        : Array.isArray(json)
+        ? json
+        : [];
+
+      if (items.length > 0) {
         const merged = mergeWithLtaData(
           currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS,
-          data.value
+          items
         );
+        const hasKey = json.hasAccountKey !== false;
         return {
           carparks: merged,
-          sourceUsed: 'LTA DataMall (CarParkAvailabilityv2 Live)',
-        };
-      } else if (data.items && Array.isArray(data.items)) {
-        // Gov fallback
-        const merged = mergeWithGovData(
-          currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS,
-          data.items[0]?.carpark_data || []
-        );
-        return {
-          carparks: merged,
-          sourceUsed: 'data.gov.sg (LTA Proxy Live Feed)',
+          sourceUsed: hasKey
+            ? 'LTA DataMall Serverless (/api/carparkavailability)'
+            : 'LTA DataMall Serverless (Fallback Demo - Add AccountKey)',
         };
       }
 
-      // If no items returned, simulate ticks
+      // If pending configuration notice
       return {
         carparks: simulateLotTicks(currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS),
-        sourceUsed: 'LTA DataMall (Simulation - AccountKey not set)',
+        sourceUsed: 'LTA DataMall (/api/carparkavailability - Waiting for AccountKey)',
       };
     } catch (err: any) {
-      console.warn('LTA carparks fetch failed:', err);
+      console.warn('LTA serverless fetch failed, falling back:', err);
       return {
         carparks: simulateLotTicks(currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS),
-        sourceUsed: 'Simulated Stream (LTA Server fallback)',
+        sourceUsed: 'Simulated Stream (LTA Serverless fallback: ' + (err?.message || 'Error') + ')',
         error: err?.message,
       };
     }
   }
 
-  // Option 2: Simulated Stream
-  if (config.source === 'simulated') {
-    return {
-      carparks: simulateLotTicks(currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS),
-      sourceUsed: 'Simulated Real-Time Stream (Demo)',
-    };
-  }
-
-  // Option 3: Direct Gov API
+  // Option 2: Direct data.gov.sg
   if (config.source === 'direct_gov') {
     try {
       const res = await fetch(GOV_API_URL, {
@@ -306,35 +279,54 @@ export async function fetchCarparks(
         sourceUsed: 'data.gov.sg (Live Official SGT)',
       };
     } catch (err: any) {
+      console.warn('Failed to fetch from data.gov.sg:', err);
       return {
         carparks: simulateLotTicks(currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS),
-        sourceUsed: 'Simulated Stream (Gov API fallback)',
+        sourceUsed: 'Simulated Stream (Gov API fallback: ' + (err?.message || 'CORS/Network error') + ')',
         error: err?.message,
       };
     }
   }
 
-  // Option 4: Custom Backend
+  // Option 3: Custom Backend
   if (config.source === 'custom_backend') {
     try {
       const headers: Record<string, string> = { Accept: 'application/json' };
       if (config.apiKey) {
         headers['Authorization'] = `Bearer ${config.apiKey}`;
+        headers['AccountKey'] = config.apiKey;
       }
-      const res = await fetch(config.customEndpointUrl, { method: 'GET', headers });
+      const res = await fetch(config.customEndpointUrl, {
+        method: 'GET',
+        headers,
+      });
       if (!res.ok) {
         throw new Error(`Custom backend responded with HTTP ${res.status}`);
       }
       const data = await res.json();
+
+      // Check if it's LTA DataMall shape
+      if (Array.isArray(data.value)) {
+        const merged = mergeWithLtaData(
+          currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS,
+          data.value
+        );
+        return {
+          carparks: merged,
+          sourceUsed: `Custom Backend (LTA DataMall): ${config.customEndpointUrl}`,
+        };
+      }
+
       const list = Array.isArray(data) ? data : data.carparks || data.data || [];
       if (!Array.isArray(list) || list.length === 0) {
-        throw new Error('Custom backend returned empty payload');
+        throw new Error('Custom backend returned empty or non-array payload');
       }
       return {
         carparks: list,
         sourceUsed: `Custom Backend: ${config.customEndpointUrl}`,
       };
     } catch (err: any) {
+      console.error('Custom backend request failed:', err);
       return {
         carparks: simulateLotTicks(currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS),
         sourceUsed: 'Simulated (Custom Backend unreachable)',
@@ -343,92 +335,14 @@ export async function fetchCarparks(
     }
   }
 
+  // Option 4: Simulated Stream
   return {
-    carparks: INITIAL_SINGAPORE_CARPARKS,
-    sourceUsed: 'Default Mock',
+    carparks: simulateLotTicks(currentCarparks.length ? currentCarparks : INITIAL_SINGAPORE_CARPARKS),
+    sourceUsed: 'Simulated Real-Time Stream (Demo)',
   };
 }
 
-// Fetch Traffic Incidents from LTA DataMall
-export async function fetchTrafficIncidents(ltaAccountKey?: string): Promise<TrafficIncident[]> {
-  try {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (ltaAccountKey) {
-      headers['x-account-key'] = ltaAccountKey;
-    }
-    const res = await fetch('/api/lta/traffic-incidents', { headers });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.value || [];
-  } catch (err) {
-    console.error('Failed to fetch traffic incidents:', err);
-    return [];
-  }
-}
-
-// Fetch Train Service Alerts from LTA DataMall
-export async function fetchTrainAlerts(ltaAccountKey?: string): Promise<TrainAlert | null> {
-  try {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (ltaAccountKey) {
-      headers['x-account-key'] = ltaAccountKey;
-    }
-    const res = await fetch('/api/lta/train-alerts', { headers });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.value || null;
-  } catch (err) {
-    console.error('Failed to fetch train alerts:', err);
-    return null;
-  }
-}
-
-// Fetch Next Buses from LTA DataMall (v3)
-export async function fetchBusArrivals(
-  busStopCode: string = '83139',
-  serviceNo?: string,
-  ltaAccountKey?: string
-): Promise<BusArrivalResponse | null> {
-  try {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (ltaAccountKey) {
-      headers['x-account-key'] = ltaAccountKey;
-    }
-    let url = `/api/lta/bus-arrivals?BusStopCode=${encodeURIComponent(busStopCode)}`;
-    if (serviceNo) {
-      url += `&ServiceNo=${encodeURIComponent(serviceNo)}`;
-    }
-    const res = await fetch(url, { headers });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (err) {
-    console.error('Failed to fetch bus arrivals:', err);
-    return null;
-  }
-}
-
-// Test LTA AccountKey
-export async function testLtaAccountKey(
-  key: string
-): Promise<{ success: boolean; latencyMs: number; message: string }> {
-  try {
-    const res = await fetch('/api/lta/test-key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accountKey: key }),
-    });
-    const data = await res.json();
-    return data;
-  } catch (err: any) {
-    return {
-      success: false,
-      latencyMs: 0,
-      message: err?.message || 'Failed to ping test endpoint',
-    };
-  }
-}
-
-// Test custom backend connectivity
+// Test backend or serverless connectivity
 export async function testBackendConnection(
   url: string,
   apiKey?: string
@@ -437,6 +351,7 @@ export async function testBackendConnection(
   try {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (apiKey) {
+      headers['AccountKey'] = apiKey;
       headers['Authorization'] = `Bearer ${apiKey}`;
     }
     const res = await fetch(url, { method: 'GET', headers });
@@ -463,7 +378,7 @@ export async function testBackendConnection(
     return {
       success: false,
       latencyMs: Math.round(end - start),
-      message: err?.message || 'Could not connect. Ensure CORS is enabled on the server.',
+      message: err?.message || 'Could not connect. Ensure server is running and CORS is enabled.',
     };
   }
 }

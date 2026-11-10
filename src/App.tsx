@@ -25,7 +25,6 @@ import { CarparkMap } from './components/CarparkMap';
 import { CarparkDetailModal } from './components/CarparkDetailModal';
 import { RateEstimatorModal } from './components/RateEstimatorModal';
 import { BackendIntegrationModal } from './components/BackendIntegrationModal';
-import { LtaTransitBar } from './components/LtaTransitBar';
 import { Car, MapPin, X, AlertCircle, RefreshCw } from 'lucide-react';
 
 const STORAGE_FAVORITES_KEY = 'sg_carpark_favorites';
@@ -368,12 +367,6 @@ export default function App() {
         onViewModeChange={setViewMode}
         totalCarparksCount={carparks.length}
         activeSourceLabel={activeSourceLabel}
-      />
-
-      {/* LTA DataMall Live Transit & Road Conditions Bar */}
-      <LtaTransitBar
-        ltaAccountKey={backendConfig.ltaAccountKey}
-        onOpenBackendModal={() => setIsBackendModalOpen(true)}
       />
 
       {/* 2. Island-wide Stats Banner */}

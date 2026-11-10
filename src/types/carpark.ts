@@ -53,14 +53,13 @@ export interface Carpark {
   lotDelta?: number; // Real-time delta e.g. +3 or -2 since previous poll
 }
 
-export type DataSourceMode = 'lta_datamall' | 'direct_gov' | 'custom_backend' | 'simulated';
+export type DataSourceMode = 'lta_serverless' | 'direct_gov' | 'custom_backend' | 'simulated';
 
 export interface BackendConfig {
   source: DataSourceMode;
   customEndpointUrl: string;
   pollIntervalSecs: number; // e.g. 30s
   apiKey?: string;
-  ltaAccountKey?: string;
   autoRefresh: boolean;
 }
 
@@ -75,40 +74,4 @@ export interface FilterState {
   highClearanceOnly: boolean; // >= 2.1m
   sortBy: 'availability_desc' | 'availability_asc' | 'distance_asc' | 'name_asc';
   onlyFavorites: boolean;
-}
-
-// LTA Transit Types
-export interface TrafficIncident {
-  Type: string;
-  Latitude: number;
-  Longitude: number;
-  Message: string;
-}
-
-export interface TrainAlert {
-  Status: number; // 1 = Normal, 2 = Disrupted
-  Lines?: Array<{ code: string; name: string; status: string }>;
-  Message?: string[];
-}
-
-export interface BusArrivalNextBus {
-  EstimatedArrival: string;
-  Load: 'SEA' | 'SDA' | 'LSD' | string; // Seats Available, Standing Available, Limited Standing
-  Feature: string; // e.g. WAB (Wheelchair Accessible Bus)
-  Type: string; // SD (Single Deck), DD (Double Deck), BD (Bendy)
-}
-
-export interface BusServiceArrival {
-  ServiceNo: string;
-  Operator: string;
-  NextBus: BusArrivalNextBus;
-  NextBus2?: Partial<BusArrivalNextBus>;
-  NextBus3?: Partial<BusArrivalNextBus>;
-}
-
-export interface BusArrivalResponse {
-  BusStopCode: string;
-  Services: BusServiceArrival[];
-  source?: string;
-  accountKeyProvided?: boolean;
 }
