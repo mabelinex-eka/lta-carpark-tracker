@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { BackendConfig, DataSourceMode } from '../types/carpark';
-import { testBackendConnection } from '../services/carparkApi';
+import { testBackendConnection, testLtaAccountKey } from '../services/carparkApi';
 import { 
   X, 
   Server, 
@@ -14,7 +14,12 @@ import {
   Cpu, 
   Activity,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  KeyRound,
+  Bus,
+  Train,
+  AlertTriangle,
+  Car
 } from 'lucide-react';
 
 interface BackendIntegrationModalProps {
@@ -28,15 +33,23 @@ export const BackendIntegrationModal: React.FC<BackendIntegrationModalProps> = (
   onUpdateConfig,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'settings' | 'contract' | 'starter_code'>('settings');
+  const [activeTab, setActiveTab] = useState<'lta_datamall' | 'settings' | 'contract' | 'starter_code'>('lta_datamall');
   const [source, setSource] = useState<DataSourceMode>(config.source);
   const [url, setUrl] = useState<string>(config.customEndpointUrl);
   const [apiKey, setApiKey] = useState<string>(config.apiKey || '');
+  const [ltaAccountKey, setLtaAccountKey] = useState<string>(config.ltaAccountKey || '');
   const [interval, setInterval] = useState<number>(config.pollIntervalSecs);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(config.autoRefresh);
 
-  const [isTesting, setIsTesting] = useState<boolean>(false);
-  const [testResult, setTestResult] = useState<{
+  const [isTestingLta, setIsTestingLta] = useState<boolean>(false);
+  const [ltaTestResult, setLtaTestResult] = useState<{
+    success: boolean;
+    latencyMs: number;
+    message: string;
+  } | null>(null);
+
+  const [isTestingCustom, setIsTestingCustom] = useState<boolean>(false);
+  const [customTestResult, setCustomTestResult] = useState<{
     success: boolean;
     latencyMs: number;
     message: string;
@@ -50,27 +63,42 @@ export const BackendIntegrationModal: React.FC<BackendIntegrationModalProps> = (
       source,
       customEndpointUrl: url,
       apiKey: apiKey.trim() || undefined,
+      ltaAccountKey: ltaAccountKey.trim() || undefined,
       pollIntervalSecs: interval,
       autoRefresh,
     });
     onClose();
   };
 
-  const handleTestPing = async () => {
+  const handleTestLta = async () => {
+    if (!ltaAccountKey.trim()) return;
+    setIsTestingLta(true);
+    setLtaTestResult(null);
+    try {
+      const res = await testLtaAccountKey(ltaAccountKey.trim());
+      setLtaTestResult(res);
+    } catch (e: any) {
+      setLtaTestResult({ success: false, latencyMs: 0, message: e?.message || 'Test failed' });
+    } finally {
+      setIsTestingLta(false);
+    }
+  };
+
+  const handleTestCustom = async () => {
     if (!url) return;
-    setIsTesting(true);
-    setTestResult(null);
+    setIsTestingCustom(true);
+    setCustomTestResult(null);
     try {
       const result = await testBackendConnection(url, apiKey || undefined);
-      setTestResult(result);
+      setCustomTestResult(result);
     } catch (e: any) {
-      setTestResult({
+      setCustomTestResult({
         success: false,
         latencyMs: 0,
         message: e?.message || 'Failed to ping',
       });
     } finally {
-      setIsTesting(false);
+      setIsTestingCustom(false);
     }
   };
 
@@ -80,88 +108,64 @@ export const BackendIntegrationModal: React.FC<BackendIntegrationModalProps> = (
     setTimeout(() => setCopiedCode(null), 2000);
   };
 
-  const sampleJsonSchema = `// Sample GET /api/carparks Response JSON:
-[
-  {
-    "id": "ACB",
-    "name": "Ang Mo Kio Central Blk 712",
-    "address": "Blk 712 Ang Mo Kio Ave 6, Singapore 560712",
-    "agency": "HDB",
-    "structure": "MULTI-STOREY",
-    "coordinates": { "lat": 1.3698, "lng": 103.8475 },
-    "zone": "North",
-    "lots": {
-      "C": { "total_lots": 420, "lot_type": "C", "lots_available": 114 },
-      "Y": { "total_lots": 80, "lot_type": "Y", "lots_available": 32 }
-    },
-    "totalLotsCombined": 500,
-    "availableLotsCombined": 146,
-    "occupancyPercent": 70,
-    "status": "available",
-    "update_datetime": "2026-11-10T03:34:00Z",
-    "gantry_height_m": 2.1,
-    "free_parking": true,
-    "free_parking_desc": "Sundays 7am - 10:30pm",
-    "night_parking": true,
-    "has_ev_charging": true,
-    "rates": {
-      "weekday_day": "$0.60 per 30 mins",
-      "weekday_night": "$0.60 per 30 mins",
-      "weekend": "$0.60 per 30 mins",
-      "grace_period_mins": 15
-    }
-  }
-]`;
+  const ltaEndpointsSpec = `// Singapore LTA DataMall Endpoints & Headers:
+// Header required: AccountKey: <Your_LTA_Account_Key>
 
-  const nodeExpressCode = `// Node.js + Express Backend Starter (server.js)
+1. Live Carpark Availability (HDB + LTA + URA):
+GET https://datamall2.mytransport.sg/ltaodataservice/CarParkAvailabilityv2
+
+2. Traffic Incidents & Expressway Alerts:
+GET https://datamall2.mytransport.sg/ltaodataservice/TrafficIncidents
+
+3. MRT / LRT Train Service Alerts:
+GET https://datamall2.mytransport.sg/ltaodataservice/TrainServiceAlerts
+
+4. Next Bus Arrivals (v3 - 20s refresh):
+GET https://datamall2.mytransport.sg/ltaodataservice/v3/BusArrival?BusStopCode=83139
+// Optional service filter: &ServiceNo=15`;
+
+  const nodeExpressCode = `// Node.js + Express Proxy for LTA DataMall (server.ts / server.js)
 const express = require('express');
-const cors = require('cors');
 const axios = require('axios');
 
 const app = express();
-app.use(cors()); // Allow frontend requests
+const LTA_KEY = process.env.LTA_DATAMALL_ACCOUNT_KEY || 'YOUR_LTA_KEY';
 
-// Route: Get real-time carparks from data.gov.sg or your database
-app.get('/api/carparks', async (req, res) => {
-  try {
-    // 1. Fetch live lot availability from Singapore Gov API
-    const govRes = await axios.get('https://api.data.gov.sg/v1/transport/carpark-availability');
-    const items = govRes.data.items[0]?.carpark_data || [];
-    
-    // 2. Return data or enriched database records
-    res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      count: items.length,
-      carparks: items
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// 1. Live Carparks (HDB + LTA + URA)
+app.get('/api/lta/carparks', async (req, res) => {
+  const response = await axios.get('https://datamall2.mytransport.sg/ltaodataservice/CarParkAvailabilityv2', {
+    headers: { AccountKey: req.headers['x-account-key'] || LTA_KEY }
+  });
+  res.json(response.data);
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(\`SG Carpark API running on port \${PORT}\`));`;
+// 2. Traffic Incidents
+app.get('/api/lta/traffic-incidents', async (req, res) => {
+  const response = await axios.get('https://datamall2.mytransport.sg/ltaodataservice/TrafficIncidents', {
+    headers: { AccountKey: LTA_KEY }
+  });
+  res.json(response.data);
+});
 
-  const pythonFastApiCode = `# Python + FastAPI Starter (main.py)
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import httpx
+// 3. Train Service Alerts
+app.get('/api/lta/train-alerts', async (req, res) => {
+  const response = await axios.get('https://datamall2.mytransport.sg/ltaodataservice/TrainServiceAlerts', {
+    headers: { AccountKey: LTA_KEY }
+  });
+  res.json(response.data);
+});
 
-app = FastAPI()
+// 4. Next Bus Arrival (v3)
+app.get('/api/lta/bus-arrivals', async (req, res) => {
+  const { BusStopCode, ServiceNo } = req.query;
+  let url = \`https://datamall2.mytransport.sg/ltaodataservice/v3/BusArrival?BusStopCode=\${BusStopCode}\`;
+  if (ServiceNo) url += \`&ServiceNo=\${ServiceNo}\`;
+  
+  const response = await axios.get(url, { headers: { AccountKey: LTA_KEY } });
+  res.json(response.data);
+});
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/api/carparks")
-async def get_carparks():
-    async with httpx.AsyncClient() as client:
-        res = await client.get("https://api.data.gov.sg/v1/transport/carpark-availability")
-        return res.json()`;
+app.listen(3000, () => console.log('LTA DataMall Proxy running on port 3000'));`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
@@ -177,13 +181,13 @@ async def get_carparks():
             </div>
             <div>
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                Backend Integration Hub
+                Backend &amp; LTA DataMall Hub
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
-                  Ready to Connect
+                  Full-Stack Ready
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Plug your custom backend server, test connection, or switch live data sources
+                Configure Singapore LTA DataMall AccountKey and custom backend endpoints
               </p>
             </div>
           </div>
@@ -196,53 +200,235 @@ async def get_carparks():
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex items-center px-6 pt-3 border-b border-slate-800 bg-slate-950/40 gap-4 text-xs font-semibold">
+        <div className="flex items-center px-6 pt-3 border-b border-slate-800 bg-slate-950/40 gap-4 text-xs font-semibold overflow-x-auto no-scrollbar">
+          <button
+            onClick={() => setActiveTab('lta_datamall')}
+            className={`pb-3 transition border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
+              activeTab === 'lta_datamall'
+                ? 'border-emerald-400 text-emerald-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <KeyRound className="w-4 h-4" />
+            <span>LTA DataMall &amp; AccountKey</span>
+          </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`pb-3 transition border-b-2 flex items-center gap-1.5 ${
+            className={`pb-3 transition border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
               activeTab === 'settings'
                 ? 'border-emerald-400 text-emerald-400'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
             <Activity className="w-4 h-4" />
-            <span>Connection &amp; Endpoints</span>
+            <span>Data Sources &amp; Polling</span>
           </button>
           <button
             onClick={() => setActiveTab('contract')}
-            className={`pb-3 transition border-b-2 flex items-center gap-1.5 ${
+            className={`pb-3 transition border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
               activeTab === 'contract'
                 ? 'border-emerald-400 text-emerald-400'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
             <Code className="w-4 h-4" />
-            <span>API JSON Contract</span>
+            <span>Endpoints Specification</span>
           </button>
           <button
             onClick={() => setActiveTab('starter_code')}
-            className={`pb-3 transition border-b-2 flex items-center gap-1.5 ${
+            className={`pb-3 transition border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
               activeTab === 'starter_code'
                 ? 'border-emerald-400 text-emerald-400'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
             <Cpu className="w-4 h-4" />
-            <span>Backend Starter Templates</span>
+            <span>Express Proxy Code</span>
           </button>
         </div>
 
         {/* Tab Content */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
+          
+          {/* Tab 1: LTA DataMall AccountKey & Endpoints */}
+          {activeTab === 'lta_datamall' && (
+            <div className="space-y-4">
+              <div className="bg-emerald-950/30 border border-emerald-500/30 p-4 rounded-2xl">
+                <div className="flex items-center gap-2 text-emerald-300 font-semibold text-xs mb-1">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Integrated LTA DataMall Endpoints</span>
+                </div>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  All requests to LTA DataMall require an <code className="bg-slate-900 px-1.5 py-0.5 rounded text-emerald-400 font-mono text-[11px]">AccountKey: &lt;key&gt;</code> header.
+                  Our server proxy in <code className="font-mono text-slate-200">server.ts</code> handles this securely without exposing keys in client code or hitting CORS limitations.
+                </p>
+              </div>
+
+              {/* AccountKey Input & Tester */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+                    Enter Your LTA DataMall AccountKey
+                  </label>
+                  <a
+                    href="https://datamall.lta.gov.sg/content/datamall/en/request-for-api.html"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-cyan-400 hover:underline"
+                  >
+                    Get Free LTA Key ↗
+                  </a>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={ltaAccountKey}
+                    onChange={(e) => setLtaAccountKey(e.target.value)}
+                    placeholder="e.g. jKLmNpQrStUvWxYz1234567890..."
+                    className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestLta}
+                    disabled={isTestingLta || !ltaAccountKey.trim()}
+                    className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 shrink-0 transition disabled:opacity-50"
+                  >
+                    <Play className="w-3 h-3 fill-slate-950" />
+                    <span>{isTestingLta ? 'Testing...' : 'Test Key'}</span>
+                  </button>
+                </div>
+
+                {/* Test Feedback */}
+                {ltaTestResult && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs ${
+                      ltaTestResult.success
+                        ? 'bg-emerald-950/40 border-emerald-600/50 text-emerald-300'
+                        : 'bg-rose-950/40 border-rose-600/50 text-rose-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 font-semibold">
+                      {ltaTestResult.success ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-rose-400" />
+                      )}
+                      <span>{ltaTestResult.message}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Supported LTA Endpoints Cards */}
+              <div className="space-y-2">
+                <span className="text-xs font-semibold text-slate-300 block">Connected LTA Endpoints:</span>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center gap-1.5 font-semibold text-emerald-400 mb-1">
+                      <Car className="w-3.5 h-3.5" />
+                      <span>CarParkAvailabilityv2</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Live carpark availability for all HDB, LTA &amp; URA carparks across Singapore.
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center gap-1.5 font-semibold text-cyan-400 mb-1">
+                      <Bus className="w-3.5 h-3.5" />
+                      <span>BusArrival (v3)</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Real-time next bus arrival timings, loads (SEA/SDA/LSD), and wheelchair accessibility.
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center gap-1.5 font-semibold text-rose-400 mb-1">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>TrafficIncidents</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Live expressway accidents, roadworks, and traffic delays across SG.
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center gap-1.5 font-semibold text-amber-400 mb-1">
+                      <Train className="w-3.5 h-3.5" />
+                      <span>TrainServiceAlerts</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Status of MRT lines (NSL, EWL, NEL, CCL, DTL, TEL) and LRT loops.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Tab 2: General Data Source & Polling */}
           {activeTab === 'settings' && (
             <div className="space-y-5">
-              {/* Data Source Selection */}
               <div>
                 <label className="text-xs font-semibold text-slate-300 block mb-2">
                   Select Active Data Source
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  {/* Option 1: Simulated Stream */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div
+                    onClick={() => setSource('lta_datamall')}
+                    className={`p-3.5 rounded-2xl border cursor-pointer transition ${
+                      source === 'lta_datamall'
+                        ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-semibold text-xs text-white">LTA DataMall (Official)</span>
+                      <Radio className={`w-3.5 h-3.5 ${source === 'lta_datamall' ? 'text-emerald-400' : 'text-slate-600'}`} />
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Uses server proxy with your AccountKey for CarParkAvailabilityv2 &amp; Transit.
+                    </p>
+                  </div>
+
+                  <div
+                    onClick={() => setSource('direct_gov')}
+                    className={`p-3.5 rounded-2xl border cursor-pointer transition ${
+                      source === 'direct_gov'
+                        ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-semibold text-xs text-white">data.gov.sg (CORS Open)</span>
+                      <Radio className={`w-3.5 h-3.5 ${source === 'direct_gov' ? 'text-emerald-400' : 'text-slate-600'}`} />
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Fetches directly from Singapore Gov open API (1-minute update frequency).
+                    </p>
+                  </div>
+
+                  <div
+                    onClick={() => setSource('custom_backend')}
+                    className={`p-3.5 rounded-2xl border cursor-pointer transition ${
+                      source === 'custom_backend'
+                        ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-semibold text-xs text-white">Custom Server URL</span>
+                      <Radio className={`w-3.5 h-3.5 ${source === 'custom_backend' ? 'text-emerald-400' : 'text-slate-600'}`} />
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Connect to your own custom backend server endpoint.
+                    </p>
+                  </div>
+
                   <div
                     onClick={() => setSource('simulated')}
                     className={`p-3.5 rounded-2xl border cursor-pointer transition ${
@@ -256,116 +442,10 @@ async def get_carparks():
                       <Radio className={`w-3.5 h-3.5 ${source === 'simulated' ? 'text-emerald-400' : 'text-slate-600'}`} />
                     </div>
                     <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Generates authentic vehicle ingress/egress ticks for frontend testing without network dependencies.
-                    </p>
-                  </div>
-
-                  {/* Option 2: Direct Official Gov API */}
-                  <div
-                    onClick={() => setSource('direct_gov')}
-                    className={`p-3.5 rounded-2xl border cursor-pointer transition ${
-                      source === 'direct_gov'
-                        ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
-                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-xs text-white">data.gov.sg (Live)</span>
-                      <Radio className={`w-3.5 h-3.5 ${source === 'direct_gov' ? 'text-emerald-400' : 'text-slate-600'}`} />
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Fetches directly from official Singapore Gov API with 1-min updates across island.
-                    </p>
-                  </div>
-
-                  {/* Option 3: Custom Backend */}
-                  <div
-                    onClick={() => setSource('custom_backend')}
-                    className={`p-3.5 rounded-2xl border cursor-pointer transition ${
-                      source === 'custom_backend'
-                        ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500'
-                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-xs text-white">Custom Backend</span>
-                      <Radio className={`w-3.5 h-3.5 ${source === 'custom_backend' ? 'text-emerald-400' : 'text-slate-600'}`} />
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Connect to your own custom server endpoint (e.g. Node, Python, Spring, Go).
+                      Simulates ingress/egress ticks for offline development and testing.
                     </p>
                   </div>
                 </div>
-              </div>
-
-              {/* Custom Backend Settings (Active if custom_backend or testing) */}
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-200">
-                    Custom Backend Endpoint Configuration
-                  </span>
-                  <span className="text-[11px] text-slate-500 font-mono">REST / JSON</span>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">Target Endpoint URL</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="url"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      placeholder="http://localhost:8080/api/carparks or https://api.myserver.com/carparks"
-                      className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleTestPing}
-                      disabled={isTesting || !url}
-                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 shrink-0 transition disabled:opacity-50"
-                    >
-                      <Play className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-                      <span>{isTesting ? 'Testing...' : 'Test Ping'}</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">
-                    Authorization Header (Optional Bearer Token)
-                  </label>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="Bearer token or API key..."
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-600 outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                {/* Test Result Feedback */}
-                {testResult && (
-                  <div
-                    className={`p-3 rounded-xl border text-xs ${
-                      testResult.success
-                        ? 'bg-emerald-950/40 border-emerald-600/50 text-emerald-300'
-                        : 'bg-rose-950/40 border-rose-600/50 text-rose-300'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 font-semibold">
-                      {testResult.success ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <AlertCircle className="w-4 h-4 text-rose-400" />
-                      )}
-                      <span>{testResult.message}</span>
-                    </div>
-                    {testResult.sampleData && (
-                      <pre className="mt-2 p-2 bg-slate-950 rounded-lg text-[10px] font-mono text-slate-300 max-h-24 overflow-y-auto">
-                        {JSON.stringify(testResult.sampleData, null, 2)}
-                      </pre>
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* Polling Interval */}
@@ -378,88 +458,70 @@ async def get_carparks():
                     Controls how frequently the frontend polls for fresh lot numbers
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <select
-                    value={interval}
-                    onChange={(e) => setInterval(parseInt(e.target.value, 10))}
-                    className="bg-slate-900 text-slate-200 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono outline-none cursor-pointer"
-                  >
-                    <option value={15}>Every 15s</option>
-                    <option value={30}>Every 30s</option>
-                    <option value={60}>Every 60s (Gov standard)</option>
-                    <option value={120}>Every 2 mins</option>
-                  </select>
-                </div>
+                <select
+                  value={interval}
+                  onChange={(e) => setInterval(parseInt(e.target.value, 10))}
+                  className="bg-slate-900 text-slate-200 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono outline-none cursor-pointer"
+                >
+                  <option value={15}>Every 15s</option>
+                  <option value={20}>Every 20s (LTA Bus standard)</option>
+                  <option value={30}>Every 30s</option>
+                  <option value={60}>Every 60s (LTA Carpark standard)</option>
+                </select>
               </div>
             </div>
           )}
 
+          {/* Tab 3: Endpoints Specification */}
           {activeTab === 'contract' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-400">
-                  Your backend should return JSON matching this schema:
+                  Exact LTA DataMall Endpoints &amp; Header requirements:
                 </span>
                 <button
-                  onClick={() => copyToClipboard(sampleJsonSchema, 'schema')}
+                  onClick={() => copyToClipboard(ltaEndpointsSpec, 'spec')}
                   className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 font-mono"
                 >
-                  {copiedCode === 'schema' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedCode === 'schema' ? 'Copied' : 'Copy Schema'}</span>
+                  {copiedCode === 'spec' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedCode === 'spec' ? 'Copied' : 'Copy Endpoints'}</span>
                 </button>
               </div>
 
               <pre className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-emerald-300/90 overflow-x-auto max-h-[380px]">
-                {sampleJsonSchema}
+                {ltaEndpointsSpec}
               </pre>
             </div>
           )}
 
+          {/* Tab 4: Starter Code */}
           {activeTab === 'starter_code' && (
             <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-semibold text-slate-300">
-                    Node.js Express Proxy Server
-                  </span>
-                  <button
-                    onClick={() => copyToClipboard(nodeExpressCode, 'node')}
-                    className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 font-mono"
-                  >
-                    {copiedCode === 'node' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedCode === 'node' ? 'Copied' : 'Copy'}</span>
-                  </button>
-                </div>
-                <pre className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300 overflow-x-auto max-h-48">
-                  {nodeExpressCode}
-                </pre>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">
+                  Full server-side Express proxy (already mounted in <code className="text-emerald-400">server.ts</code>):
+                </span>
+                <button
+                  onClick={() => copyToClipboard(nodeExpressCode, 'proxy')}
+                  className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 font-mono"
+                >
+                  {copiedCode === 'proxy' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedCode === 'proxy' ? 'Copied' : 'Copy Code'}</span>
+                </button>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-semibold text-slate-300">
-                    Python FastAPI Starter
-                  </span>
-                  <button
-                    onClick={() => copyToClipboard(pythonFastApiCode, 'python')}
-                    className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 font-mono"
-                  >
-                    {copiedCode === 'python' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedCode === 'python' ? 'Copied' : 'Copy'}</span>
-                  </button>
-                </div>
-                <pre className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300 overflow-x-auto max-h-40">
-                  {pythonFastApiCode}
-                </pre>
-              </div>
+              <pre className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300 overflow-x-auto max-h-[380px]">
+                {nodeExpressCode}
+              </pre>
             </div>
           )}
+
         </div>
 
         {/* Modal Footer */}
         <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
           <div className="text-xs text-slate-500 font-mono">
-            Active: <span className="text-slate-300">{source}</span>
+            Source: <span className="text-emerald-400 font-semibold">{source}</span>
           </div>
           <div className="flex items-center gap-2.5">
             <button

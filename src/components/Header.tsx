@@ -175,7 +175,7 @@ export const Header: React.FC<HeaderProps> = ({
               <Server className="w-3.5 h-3.5 text-emerald-400" />
               <span>Backend API</span>
               <span className="hidden xl:inline-block text-[10px] bg-emerald-500/20 px-1 py-0.2 rounded font-mono">
-                {backendConfig.source === 'custom_backend' ? 'Custom' : 'Ready'}
+                {backendConfig.source === 'lta_datamall' ? 'LTA DataMall' : backendConfig.source === 'custom_backend' ? 'Custom' : 'Demo'}
               </span>
             </button>
           </div>
