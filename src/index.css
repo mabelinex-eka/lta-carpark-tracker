@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* Leaflet Dark Theme Overrides */
+.leaflet-container {
+  background-color: #020617 !important;
+  font-family: inherit;
+}
+
+.dark-leaflet-popup .leaflet-popup-content-wrapper {
+  background: #0f172a !important;
+  color: #f8fafc !important;
+  border: 1px solid #334155 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+  padding: 4px !important;
+}
+
+.dark-leaflet-popup .leaflet-popup-tip {
+  background: #0f172a !important;
+  border: 1px solid #334155 !important;
+}
+
+.dark-leaflet-popup a.leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 8px 8px 0 0 !important;
+}
+
+.dark-leaflet-popup a.leaflet-popup-close-button:hover {
+  color: #ffffff !important;
+}
+
+/* Custom Marker styles */
+.custom-carpark-pin {
+  background: transparent !important;
+  border: none !important;
+}
+
+.user-gps-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Grid columns 24 for 24-hour occupancy bar chart */
+.grid-cols-24 {
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+}
+
+/* Smooth animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.15s ease-out forwards;
+}
+
+/* Hide scrollbar for neat horizontal scroll */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
